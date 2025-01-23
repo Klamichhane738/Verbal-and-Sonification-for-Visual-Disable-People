@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dynamic JSON Plot and Sonification</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.30/Tone.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+        h1 {
+            text-align: center;
+        }
+        #chart-container {
+            width: 80%;
+            margin: auto;
+        }
+        #fileInput {
+            display: block;
+            margin: 20px auto;
+        }
+        #startAudio {
+            display: block;
+            margin: 20px auto;
+            padding: 10px 20px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        #startAudio:hover {
+            background-color: #45a049;
+        }
+         #how-it-works {
+            margin-top: 30px;
+            padding: 20px;
+            border: 1px solid #ddd;
+            background-color: #f9f9f9;
+         }
+    </style>
+</head>
+<body>
+    <h1>Dynamic JSON Plot and Sonification</h1>
+    <input type="file" id="fileInput" accept=".json" />
+    <div id="chart-container">
+        <canvas id="dynamicChart" width="400" height="200"></canvas>
+    </div>
+    <button id="startAudio">Start Audio</button>
+    
+    <div id="how-it-works">
+      <h2>How It Works</h2>
+       <p>This application allows you to upload a JSON file containing time-series data, and it will provide both a visual chart and an auditory representation of that data. Here's a breakdown:</p>
+      <ul>
+          <li><strong>Upload JSON File:</strong> Use the "Choose File" button to upload your JSON file. The file should contain an array of objects, where each object represents a data point and has a 'time' field and at least one numeric field.</li>
+           <li><strong>Automatic Data Detection:</strong> The system automatically detects the first numerical field within your dataset to generate the chart and use for sonification. It also uses the field with the name time for the x-axis.</li>
+           <li><strong>Chart Visualization:</strong>  Once the file is loaded, a line chart is generated, visualizing the data over time.</li>
+           <li><strong>Sonification:</strong> When you click the "Start Audio" button, the system processes the data audibly, making changes to the tone, volume and frequency to represent changes in the value over time. The application also verbally provides updates of the change in data and any trends of data, it also announces the value as well as the key used for data points and time.</li>
+          <li><strong>Trend Indication:</strong> The audio tones and speech will indicate if the data value is increasing, decreasing or stable at a given point in time.</li>
+      </ul>
+       <p><strong>Note:</strong> This tool dynamically adapts to various JSON file structures as long as they contain a "time" field and at least one numeric field. Please ensure your JSON data is in the correct format for optimal results.</p>
+   </div>
+
+    <script>
+        let isAudioStarted = false;
+        let dataPoints = [];
+        let times = [];
+        let currentSynth = null;
+        const speechSynth = window.speechSynthesis;
+        let timeouts = [];
+         let dataKey = null;
+
+
+        function clearTimeouts(){
+            timeouts.forEach(clearTimeout);
+           timeouts = [];
+         }
+        function stopSynth() {
+            if (currentSynth) {
+              currentSynth.triggerRelease();
+             }
+         }
+
+        function speak(text) {
+          if (speechSynth.speaking) {
+            speechSynth.cancel();
+          }
+          const utterance = new SpeechSynthesisUtterance(text);
+          speechSynth.speak(utterance);
+        }
+        function getNumericDataKey(data) {
+            if (!data || data.length === 0) return null;
+
+            const firstEntry = data[0];
+            for (const key in firstEntry) {
+                if (typeof firstEntry[key] === 'number') {
+                    return key;
+                }
+            }
+            return null;
+        }
+
+        function playSonification(value, prevValue, time) {
+           if (!isAudioStarted) return;
+
+            stopSynth();
+
+            const minVal = Math.min(...dataPoints);
+            const maxVal = Math.max(...dataPoints);
+            const minFreq = 100;
+            const maxFreq = 2000;
+            const minGain = 0.2;
+            const maxGain = 1.5;
+             const duration = "4n";
+
+            const frequency = (value - minVal) * (maxFreq - minFreq) / (maxVal - minVal) + minFreq;
+            const gainValue = (value - minVal) * (maxGain - minGain) / (maxVal - minVal) + minGain;
+
+            let oscillatorType = "sine";
+            let detuneValue = 0;
+            let trendText = "Stable";
+
+            if (prevValue !== undefined) {
+                if (value > prevValue) {
+                    oscillatorType = "triangle";
+                    detuneValue = 1200;
+                    trendText = `Ascending at ${time}`;
+                } else if (value < prevValue) {
+                    oscillatorType = "sawtooth";
+                    detuneValue = -1200;
+                    trendText = `Descending at ${time}`;
+                }
+                else{
+                  trendText = `Stable at ${time}`
+                }
+            }
+           
+            currentSynth = new Tone.Synth({
+                oscillator: {
+                    type: oscillatorType
+                }
+            }).toDestination();
+
+            const gain = new Tone.Gain(gainValue).connect(currentSynth.output);
+
+            const finalFrequency = frequency + detuneValue;
+
+            currentSynth.triggerAttackRelease(finalFrequency,duration);
+             speak(`${dataKey}: ${value}. Trend: ${trendText}`);
+        }
+
+        function handleFileInput(event) {
+            const file = event.target.files[0];
+            const reader = new FileReader();
+             clearTimeouts();
+            reader.onload = function(e) {
+                try {
+                    const data = JSON.parse(e.target.result);
+                   
+                    dataKey = getNumericDataKey(data);
+
+                    if (!dataKey) {
+                      alert("No numeric data field found to plot.");
+                       return;
+                    }
+
+                    dataPoints = data.map(item => item[dataKey]);
+                    times = data.map(item => item.time);
+
+
+                    const ctx = document.getElementById('dynamicChart').getContext('2d');
+                    new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: times,
+                            datasets: [{
+                                label: dataKey,
+                                data: dataPoints,
+                                borderColor: 'rgb(75, 192, 192)',
+                                backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                                fill: true,
+                                tension: 0.1
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            scales: {
+                                x: {
+                                    title: {
+                                        display: true,
+                                        text: 'Time'
+                                    }
+                                },
+                                y: {
+                                    title: {
+                                        display: true,
+                                        text: dataKey
+                                    }
+                                }
+                            }
+                        }
+                    });
+
+                     for (let i = 0; i < dataPoints.length; i++) {
+                        const value = dataPoints[i];
+                        const prevValue = i > 0 ? dataPoints[i - 1] : undefined;
+                         const time = times[i];
+
+                        const timeoutId = setTimeout(() => {
+                           if (isAudioStarted) {
+                              playSonification(value, prevValue,time);
+                            }
+                        }, i * 3000);
+                        timeouts.push(timeoutId);
+                    }
+
+                } catch (error) {
+                    console.error('Error parsing file:', error);
+                    alert('Invalid file format');
+                }
+            };
+
+            reader.readAsText(file);
+        }
+
+
+        document.getElementById('fileInput').addEventListener('change', handleFileInput);
+
+        document.getElementById('startAudio').addEventListener('click', function() {
+            Tone.start();
+            isAudioStarted = true;
+            console.log("Audio context started!");
+        });
+    </script>
+</body>
+</html>
